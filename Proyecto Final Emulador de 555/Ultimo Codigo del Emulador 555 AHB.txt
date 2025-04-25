@@ -1,0 +1,146 @@
+#include <string.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "esp_mac.h"
+#include "esp_wifi.h"
+#include "esp_event.h"
+#include "esp_log.h"
+#include "nvs_flash.h"
+#include "esp_http_server.h"
+#include "driver/gpio.h"
+
+#define LED_GPIO 2
+
+static const char *TAG = "NE555_WebSim";
+static bool is_running = false;
+static double r1 = 1000.0, r2 = 1000.0, c = 0.000001;
+TaskHandle_t pwm_task_handle = NULL;
+
+const char* html_form = "<!DOCTYPE html><html><head><title>Simulador NE555</title><style>"
+"body{font-family:sans-serif;text-align:center;padding-top:50px;}"
+"input{font-size:20px;margin:10px;}"
+"button{font-size:20px;margin:10px;}"
+"</style></head><body><h1>Simulador NE555 - ESP32</h1>"
+"<form action=\"/set\" method=\"get\">"
+"R1 (Ohmios): <input name=\"r1\" type=\"number\" value=\"1000\"><br>"
+"R2 (Ohmios): <input name=\"r2\" type=\"number\" value=\"1000\"><br>"
+"C (uF): <input name=\"c\" type=\"number\" value=\"1\"><br>"
+"<button type=\"submit\">Ejecutar</button></form><br>"
+"<a href=\"/stop\"><button>Detener</button></a></body></html>";
+
+void pwm_task(void *pvParameters) {
+    while (is_running) {
+        double t_on = 0.693 * (r1 + r2) * c;
+        double t_off = 0.693 * r2 * c;
+        double period = t_on + t_off;
+        double duty = (t_on / period) * 100.0;
+
+        ESP_LOGI(TAG, "PWM generado: T_on=%.2fms, T_off=%.2fms, Duty=%.1f%%", t_on * 1000, t_off * 1000, duty);
+
+        gpio_set_level(LED_GPIO, 1);
+        vTaskDelay(pdMS_TO_TICKS(t_on * 1000));
+        gpio_set_level(LED_GPIO, 0);
+        vTaskDelay(pdMS_TO_TICKS(t_off * 1000));
+    }
+    vTaskDelete(NULL);
+}
+
+esp_err_t root_get_handler(httpd_req_t *req) {
+    httpd_resp_send(req, html_form, HTTPD_RESP_USE_STRLEN);
+    return ESP_OK;
+}
+
+esp_err_t set_params_handler(httpd_req_t *req) {
+    char buf[100];
+    size_t buf_len = httpd_req_get_url_query_len(req) + 1;
+    if (buf_len > 1) {
+        httpd_req_get_url_query_str(req, buf, buf_len);
+
+        char param[32];
+        if (httpd_query_key_value(buf, "r1", param, sizeof(param)) == ESP_OK)
+            r1 = atof(param);
+        if (httpd_query_key_value(buf, "r2", param, sizeof(param)) == ESP_OK)
+            r2 = atof(param);
+        if (httpd_query_key_value(buf, "c", param, sizeof(param)) == ESP_OK)
+            c = atof(param) / 1000000.0;
+
+        if (!is_running) {
+            is_running = true;
+            xTaskCreate(pwm_task, "pwm_task", 2048, NULL, 5, &pwm_task_handle);
+        }
+    }
+    httpd_resp_send(req, "Simulación iniciada. <a href='/'>Volver</a>", HTTPD_RESP_USE_STRLEN);
+    return ESP_OK;
+}
+
+esp_err_t stop_handler(httpd_req_t *req) {
+    is_running = false;
+    httpd_resp_send(req, "Simulación detenida. <a href='/'>Volver</a>", HTTPD_RESP_USE_STRLEN);
+    return ESP_OK;
+}
+
+httpd_handle_t start_webserver(void) {
+    httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+    httpd_handle_t server = NULL;
+    if (httpd_start(&server, &config) == ESP_OK) {
+        httpd_uri_t root_uri = { .uri = "/", .method = HTTP_GET, .handler = root_get_handler };
+        httpd_uri_t set_uri = { .uri = "/set", .method = HTTP_GET, .handler = set_params_handler };
+        httpd_uri_t stop_uri = { .uri = "/stop", .method = HTTP_GET, .handler = stop_handler };
+        httpd_register_uri_handler(server, &root_uri);
+        httpd_register_uri_handler(server, &set_uri);
+        httpd_register_uri_handler(server, &stop_uri);
+    }
+    return server;
+}
+
+static void wifi_event_handler(void* arg, esp_event_base_t event_base,
+                               int32_t event_id, void* event_data) {
+    if (event_id == WIFI_EVENT_AP_STACONNECTED)
+        ESP_LOGI(TAG, "Cliente conectado");
+    else if (event_id == WIFI_EVENT_AP_STADISCONNECTED)
+        ESP_LOGI(TAG, "Cliente desconectado");
+}
+
+void wifi_init_softap(void) {
+    ESP_ERROR_CHECK(esp_netif_init());
+    ESP_ERROR_CHECK(esp_event_loop_create_default());
+    esp_netif_create_default_wifi_ap();
+
+    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+    ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL, NULL));
+
+    wifi_config_t wifi_config = {
+        .ap = {
+            .ssid = "brazoban",
+            .ssid_len = strlen("brazoban"),
+            .channel = 1,
+            .password = "12345678",
+            .max_connection = 4,
+            .authmode = WIFI_AUTH_WPA2_PSK,
+            .pmf_cfg = {.required = true},
+        },
+    };
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
+    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &wifi_config));
+    ESP_ERROR_CHECK(esp_wifi_start());
+    ESP_LOGI(TAG, "SoftAP iniciado. SSID:'brazoban'");
+}
+
+void app_main(void) {
+    esp_err_t ret = nvs_flash_init();
+    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        ret = nvs_flash_init();
+    }
+    ESP_ERROR_CHECK(ret);
+
+    gpio_reset_pin(LED_GPIO);
+    gpio_set_direction(LED_GPIO, GPIO_MODE_OUTPUT);
+    gpio_set_level(LED_GPIO, 0);
+
+    wifi_init_softap();
+    start_webserver();
+}

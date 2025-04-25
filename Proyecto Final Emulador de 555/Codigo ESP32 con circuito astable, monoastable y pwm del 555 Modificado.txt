@@ -1,0 +1,169 @@
+#include <string.h>
+#include <stdlib.h>
+#include <stdio.h>
+
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "esp_mac.h"
+#include "esp_wifi.h"
+#include "esp_event.h"
+#include "esp_log.h"
+#include "nvs_flash.h"
+#include "esp_http_server.h"
+
+#include "driver/gpio.h"
+
+#define LED_GPIO 2  // Cambia si usas otro pin
+
+static const char *TAG = "softAP_555";
+
+// Página HTML para configurar el modo y componentes
+const char* html_index =
+"<!DOCTYPE html><html><head><title>NE555 Simulación</title></head>"
+"<body style='text-align:center;font-family:sans-serif;'>"
+"<h1>Simulador Temporizador NE555</h1>"
+"<form action=\"/simulate\">"
+"Modo: <select name=\"mode\">"
+"<option value=\"astable\">Astable</option>"
+"<option value=\"monoestable\">Monoestable</option>"
+"</select><br><br>"
+"R1 (Ohm): <input type=\"number\" name=\"r1\" step=\"any\"><br><br>"
+"R2 (Ohm): <input type=\"number\" name=\"r2\" step=\"any\"><br><br>"
+"C (uF): <input type=\"number\" name=\"c\" step=\"any\"><br><br>"
+"<input type=\"submit\" value=\"Simular\">"
+"</form></body></html>";
+
+// --- Handlers HTTP ---
+esp_err_t root_get_handler(httpd_req_t *req) {
+    httpd_resp_send(req, html_index, HTTPD_RESP_USE_STRLEN);
+    return ESP_OK;
+}
+
+esp_err_t simulate_handler(httpd_req_t *req) {
+    char query[100];
+    httpd_req_get_url_query_str(req, query, sizeof(query));
+
+    char mode[16], r1_str[16] = "0", r2_str[16] = "0", c_str[16] = "0";
+    httpd_query_key_value(query, "mode", mode, sizeof(mode));
+    httpd_query_key_value(query, "r1", r1_str, sizeof(r1_str));
+    httpd_query_key_value(query, "r2", r2_str, sizeof(r2_str));
+    httpd_query_key_value(query, "c", c_str, sizeof(c_str));
+
+    float r1 = atof(r1_str);
+    float r2 = atof(r2_str);
+    float c = atof(c_str) / 1e6; // uF a Faradios
+
+    char response[400];
+
+    if (strcmp(mode, "astable") == 0) {
+        float t1 = 0.693 * (r1 + r2) * c;
+        float t2 = 0.693 * r2 * c;
+        float period = t1 + t2;
+        float freq = 1.0 / period;
+        float duty = (t1 / period) * 100.0;
+
+        snprintf(response, sizeof(response),
+            "<h2>Modo Astable</h2>"
+            "Tiempo Alto (T1): %.6f s<br>"
+            "Tiempo Bajo (T2): %.6f s<br>"
+            "Periodo Total: %.6f s<br>"
+            "Frecuencia: %.2f Hz<br>"
+            "Duty Cycle: %.2f%%<br>"
+            "<a href='/'>Volver</a>",
+            t1, t2, period, freq, duty);
+    } else {
+        float t = 1.1 * r1 * c;
+        snprintf(response, sizeof(response),
+            "<h2>Modo Monoestable</h2>"
+            "Duración del Pulso: %.6f s<br>"
+            "<a href='/'>Volver</a>", t);
+    }
+
+    httpd_resp_send(req, response, HTTPD_RESP_USE_STRLEN);
+    return ESP_OK;
+}
+
+// --- Web Server ---
+httpd_handle_t start_webserver(void) {
+    httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+    httpd_handle_t server = NULL;
+    if (httpd_start(&server, &config) == ESP_OK) {
+        httpd_uri_t root_uri = {
+            .uri = "/",
+            .method = HTTP_GET,
+            .handler = root_get_handler,
+            .user_ctx = NULL
+        };
+        httpd_uri_t simulate_uri = {
+            .uri = "/simulate",
+            .method = HTTP_GET,
+            .handler = simulate_handler,
+            .user_ctx = NULL
+        };
+
+        httpd_register_uri_handler(server, &root_uri);
+        httpd_register_uri_handler(server, &simulate_uri);
+    }
+    return server;
+}
+
+// --- WiFi SoftAP ---
+static void wifi_event_handler(void* arg, esp_event_base_t event_base,
+                               int32_t event_id, void* event_data) {
+    if (event_id == WIFI_EVENT_AP_STACONNECTED) {
+        ESP_LOGI(TAG, "Cliente conectado");
+    } else if (event_id == WIFI_EVENT_AP_STADISCONNECTED) {
+        ESP_LOGI(TAG, "Cliente desconectado");
+    }
+}
+
+void wifi_init_softap(void) {
+    ESP_ERROR_CHECK(esp_netif_init());
+    ESP_ERROR_CHECK(esp_event_loop_create_default());
+    esp_netif_create_default_wifi_ap();
+
+    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+
+    ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT,
+                                                        ESP_EVENT_ANY_ID,
+                                                        &wifi_event_handler,
+                                                        NULL,
+                                                        NULL));
+
+    wifi_config_t wifi_config = {
+        .ap = {
+            .ssid = "brazoban",
+            .ssid_len = strlen("brazoban"),
+            .channel = 1,
+            .password = "12345678",
+            .max_connection = 4,
+            .authmode = WIFI_AUTH_WPA2_PSK,
+            .pmf_cfg = {
+                .required = true,
+            },
+        },
+    };
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
+    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &wifi_config));
+    ESP_ERROR_CHECK(esp_wifi_start());
+
+    ESP_LOGI(TAG, "AP inicializado. SSID:brazoban");
+}
+
+// --- MAIN ---
+void app_main(void) {
+    esp_err_t ret = nvs_flash_init();
+    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        ret = nvs_flash_init();
+    }
+    ESP_ERROR_CHECK(ret);
+
+    gpio_reset_pin(LED_GPIO);
+    gpio_set_direction(LED_GPIO, GPIO_MODE_OUTPUT);
+    gpio_set_level(LED_GPIO, 0);
+
+    wifi_init_softap();
+    start_webserver();
+}
