@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Simulador NE555</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="contenedor">
+        <section class="card">
+            <h1>¡Bienvenidos!</h1>
+            <p>Este emulador permite simular el comportamiento del temporizador NE555 en los modos <strong>Astable</strong> y <strong>Monostable</strong>. Introduce los valores de resistencia y capacitancia para calcular la frecuencia y duración del pulso.</p>
+        </section>
+
+        <section class="card">
+            <h2>Modo Monoastable</h2>
+            <p>Introduce los valores para calcular el tiempo del pulso.</p>
+            <label>Resistencia (R1):</label>
+            <input type="number" id="r1_mono" placeholder="Valor"> Ω
+            <label>Capacitancia (C):</label>
+            <input type="number" id="c_mono" placeholder="Valor"> nF
+            <button onclick="calcularMono()">Calcular</button>
+            <p>Duración del Pulso (T): <span id="resultado_mono">-</span> segundos</p>
+        </section>
+
+        <section class="card">
+            <h2>Modo Astable</h2>
+            <p>Introduce los valores para calcular la frecuencia y el ciclo de trabajo.</p>
+            <label>Resistencia (R1):</label>
+            <input type="number" id="r1_astable" placeholder="Valor"> Ω
+            <label>Resistencia (R2):</label>
+            <input type="number" id="r2_astable" placeholder="Valor"> Ω
+            <label>Capacitancia (C):</label>
+            <input type="number" id="c_astable" placeholder="Valor"> nF
+            <button onclick="calcularAstable()">Calcular</button>
+            <p>Frecuencia (f): <span id="frecuencia">-</span> Hz</p>
+            <p>Ciclo de Trabajo (D): <span id="ciclo">-</span> %</p>
+        </section>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
+
+
