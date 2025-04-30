@@ -1,0 +1,26 @@
+#include <driver/gpio.h>
+#include <driver/timer.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+
+#define PIN_BOTON 0
+#define PIN_LED   2
+
+hw_timer_t* temporizador1 = NULL;  // Temporizador para medir cuánto se presiona el botón
+hw_timer_t* temporizador2 = NULL;  // Temporizador para controlar el parpadeo
+
+volatile bool botonPresionado = false;
+volatile uint32_t tiempoPresionado = 0;  // Tiempo total que se presionó el botón (en ms)
+volatile uint32_t tiempoRestante = 0;
+volatile bool parpadeando = false;
+
+TaskHandle_t tareaLedHandle = NULL;
+
+// ISR del botón
+void IRAM_ATTR botonISR() {
+    if (digitalRead(PIN_BOTON) == LOW) {
+        // Botón presionado
+        timerWrite(temporizador1, 0);
+        timerStart(temporizador1);
+        botonPresionado = true;
+        digitalWrite(PIN_LED, HIGH);
